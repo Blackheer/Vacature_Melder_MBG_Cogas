@@ -163,7 +163,6 @@ class Program
 
             Console.WriteLine("E-mail succesvol verzonden!");
         }
-        class="ex"
         catch (Exception ex)
         {
             Console.WriteLine($"Fout bij verzenden e-mail: {ex.Message}");

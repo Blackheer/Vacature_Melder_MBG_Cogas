@@ -1,15 +1,17 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
 name: Check Cogas Vacancies (.NET)
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Draait elke dag om 08:00 UTC
-  workflow_dispatch: # Maakt handmatig starten mogelijk
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 
 jobs:
   check-jobs:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Nodig om wijzigingen in JSON op te slaan in de repo
+      contents: write
       
     steps:
       - name: Checkout code
