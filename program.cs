@@ -16,7 +16,6 @@ class Program
     {
         Console.WriteLine("Start vacature-controle via Playwright...");
 
-        // Haal huidige vacatures op van de website
         var currentVacancies = await GetCurrentVacanciesAsync();
 
         if (currentVacancies.Count == 0)
@@ -44,11 +43,10 @@ class Program
         }
         else
         {
-            // Eerste keer: schrijf leeg bestand aan zodat git het kan tracken
             File.WriteAllText(JsonFile, "[]");
         }
 
-        // Vergelijk op basis van titel (links kunnen leeg zijn bij JS-rendered cards)
+        // Vergelijk op basis van titel
         var oldTitles = new HashSet<string>(oldVacancies.Select(v => v.Title));
         var newVacancies = currentVacancies.Where(v => !oldTitles.Contains(v.Title)).ToList();
 
@@ -62,7 +60,7 @@ class Program
             Console.WriteLine("Geen nieuwe vacatures gevonden.");
         }
 
-        // Sla de huidige stand op (overschrijft het oude bestand)
+        // Sla huidige stand op
         string updatedJson = JsonConvert.SerializeObject(currentVacancies, Formatting.Indented);
         File.WriteAllText(JsonFile, updatedJson);
         Console.WriteLine("vacancies.json bijgewerkt.");
@@ -80,48 +78,72 @@ class Program
                 Headless = true
             });
 
-            var page = await browser.NewPageAsync();
-
-            // Navigeer met een timeout van 30 seconden
-            await page.GotoAsync(Url, new PageGotoOptions
+            // Stap 1: haal alle titels op van de overzichtspagina
+            var overviewPage = await browser.NewPageAsync();
+            await overviewPage.GotoAsync(Url, new PageGotoOptions
             {
                 Timeout = 30_000,
                 WaitUntil = WaitUntilState.NetworkIdle
             });
 
-            // TIJDELIJK: sla screenshot en HTML op voor debug
-            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "debug_screenshot.png", FullPage = true });
-            File.WriteAllText("debug_html.html", await page.ContentAsync());
-            Console.WriteLine("DEBUG: Screenshot opgeslagen als debug_screenshot.png");
-            Console.WriteLine("DEBUG: HTML opgeslagen als debug_html.html");
-
-            // De vacaturekaarten bevatten een <h4> met de titel.
-            // De klikbare link zit in een omliggende <a> parent.
-            var headings = await page.QuerySelectorAllAsync("h4");
-            Console.WriteLine($"DEBUG: {headings.Count} h4-elementen gevonden op de pagina.");
+            var headings = await overviewPage.QuerySelectorAllAsync("h4");
+            var titles = new List<string>();
 
             foreach (var heading in headings)
             {
                 string title = (await heading.InnerTextAsync())?.Trim() ?? string.Empty;
+                if (!string.IsNullOrEmpty(title) && title.Length > 3)
+                    titles.Add(title);
+            }
 
-                // Filter lege, te korte of navigatieteksten
-                if (string.IsNullOrEmpty(title) || title.Length <= 3)
-                    continue;
+            Console.WriteLine($"{titles.Count} vacaturetitel(s) gevonden op de overzichtspagina.");
+            await overviewPage.CloseAsync();
 
-                // Zoek de dichtstbijzijnde <a> ancestor van de <h4>
-                string href = await heading.EvaluateAsync<string>(
-                    "el => { const a = el.closest('a'); return a ? a.getAttribute('href') : ''; }"
-                ) ?? string.Empty;
-
-                // Maak relatieve URLs absoluut
-                if (href.StartsWith("/"))
-                    href = "https://werkenbij.cogas.nl" + href;
-
-                // Sla op als unieke vacature (op titel, want link kan leeg zijn)
-                if (!vacancies.Any(v => v.Title == title))
+            // Stap 2: klik op elke kaart en vang de URL op
+            foreach (var title in titles)
+            {
+                try
                 {
-                    vacancies.Add(new JobVacancy { Title = title, Link = href });
-                    Console.WriteLine($"  Gevonden: {title} -> {(string.IsNullOrEmpty(href) ? "(geen link)" : href)}");
+                    var detailPage = await browser.NewPageAsync();
+
+                    // Ga terug naar overzicht
+                    await detailPage.GotoAsync(Url, new PageGotoOptions
+                    {
+                        Timeout = 30_000,
+                        WaitUntil = WaitUntilState.NetworkIdle
+                    });
+
+                    // Klik op de h4 met deze exacte titel
+                    var card = await detailPage.QuerySelectorAsync($"h4 >> text=\"{title}\"");
+                    if (card == null)
+                    {
+                        Console.WriteLine($"  Kaart niet gevonden voor: {title}");
+                        vacancies.Add(new JobVacancy { Title = title, Link = Url });
+                        await detailPage.CloseAsync();
+                        continue;
+                    }
+
+                    // Wacht op navigatie na de klik
+                    await Task.WhenAll(
+                        detailPage.WaitForNavigationAsync(new PageWaitForNavigationOptions
+                        {
+                            Timeout = 15_000,
+                            WaitUntil = WaitUntilState.NetworkIdle
+                        }),
+                        card.ClickAsync()
+                    );
+
+                    string finalUrl = detailPage.Url;
+                    Console.WriteLine($"  Gevonden: {title} -> {finalUrl}");
+                    vacancies.Add(new JobVacancy { Title = title, Link = finalUrl });
+
+                    await detailPage.CloseAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  Fout bij ophalen link voor '{title}': {ex.Message}");
+                    // Voeg toch toe met fallback-URL
+                    vacancies.Add(new JobVacancy { Title = title, Link = Url });
                 }
             }
         }
@@ -153,7 +175,6 @@ class Program
 
         try
         {
-            // Bouw een HTML-e-mail zodat links klikbaar zijn
             string vacancyListHtml = string.Join("\n", newVacancies.Select(v =>
                 $"  <li><a href=\"{v.Link}\">{System.Net.WebUtility.HtmlEncode(v.Title)}</a></li>"
             ));
