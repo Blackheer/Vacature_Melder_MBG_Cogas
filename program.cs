@@ -2,124 +2,138 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Net.Mail;
 using System.Net;
 using Newtonsoft.Json;
-using HtmlAgilityPack;
+using Microsoft.Playwright;
 
 class Program
 {
     private static readonly string Url = "https://werkenbij.cogas.nl/vacatures?functiegroep=";
     private static readonly string JsonFile = "vacancies.json";
 
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
-        Console.WriteLine("Start vacature-controle...");
+        Console.WriteLine("Start vacature-controle via Playwright...");
 
-        var currentVacancies = GetCurrentVacancies();
-        
-        // Zorg altijd dat er minimaal een leeg JSON-bestand is, ook als de lijst tijdelijk leeg is
-        if (!File.Exists(JsonFile))
-        {
-            File.WriteAllText(JsonFile, "[]");
-        }
+        // Haal huidige vacatures op van de website
+        var currentVacancies = await GetCurrentVacanciesAsync();
 
         if (currentVacancies.Count == 0)
         {
-            Console.WriteLine("Geen vacatures gevonden op de pagina.");
+            Console.WriteLine("Geen vacatures gevonden op de pagina. Afbreken.");
             return;
         }
 
-        List<JobVacancy> oldVacancies = new List<JobVacancy>();
+        Console.WriteLine($"{currentVacancies.Count} vacature(s) gevonden op de pagina.");
+
+        // Lees eerder opgeslagen vacatures uit JSON
+        var oldVacancies = new List<JobVacancy>();
         if (File.Exists(JsonFile))
         {
             try
             {
                 string jsonContent = File.ReadAllText(JsonFile);
-                oldVacancies = JsonConvert.DeserializeObject<List<JobVacancy>>(jsonContent) ?? new List<JobVacancy>();
+                oldVacancies = JsonConvert.DeserializeObject<List<JobVacancy>>(jsonContent)
+                               ?? new List<JobVacancy>();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Fout bij lezen JSON-bestand: {ex.Message}");
             }
         }
+        else
+        {
+            // Eerste keer: schrijf leeg bestand aan zodat git het kan tracken
+            File.WriteAllText(JsonFile, "[]");
+        }
 
+        // Vergelijk op basis van URL
         var oldLinks = new HashSet<string>(oldVacancies.Select(v => v.Link));
         var newVacancies = currentVacancies.Where(v => !oldLinks.Contains(v.Link)).ToList();
 
         if (newVacancies.Count > 0)
         {
-            Console.WriteLine($"Er zijn {newVacancies.Count} nieuwe vacatures gevonden!");
-            SendNotification(newVacancies);
+            Console.WriteLine($"{newVacancies.Count} nieuwe vacature(s) gevonden!");
+            SendEmailNotification(newVacancies);
         }
         else
         {
             Console.WriteLine("Geen nieuwe vacatures gevonden.");
         }
 
-        // Sla de actuele lijst altijd op, zodat het bestand er sowieso is voor git
+        // Sla de huidige stand op (overschrijft het oude bestand)
         string updatedJson = JsonConvert.SerializeObject(currentVacancies, Formatting.Indented);
         File.WriteAllText(JsonFile, updatedJson);
+        Console.WriteLine("vacancies.json bijgewerkt.");
     }
 
-    private static List<JobVacancy> GetCurrentVacancies()
+    private static async Task<List<JobVacancy>> GetCurrentVacanciesAsync()
     {
         var vacancies = new List<JobVacancy>();
+
         try
         {
-            using (var httpClient = new HttpClient())
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
-                httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-                string html = httpClient.GetStringAsync(Url).Result;
+                Headless = true
+            });
 
-                var doc = new HtmlDocument();
-                doc.LoadHtml(html);
+            var page = await browser.NewPageAsync();
 
-                // Zoek specifiek naar links of koppen binnen de vacatureblokken
-                var links = doc.DocumentNode.SelectNodes("//a[@href]");
-                if (links != null)
+            // Navigeer met een timeout van 30 seconden
+            await page.GotoAsync(Url, new PageGotoOptions
+            {
+                Timeout = 30_000,
+                WaitUntil = WaitUntilState.NetworkIdle
+            });
+
+            // Selecteer alle vacature-links
+            var elements = await page.QuerySelectorAllAsync("a[href*='/vacature/']");
+
+            foreach (var element in elements)
+            {
+                string href = await element.GetAttributeAsync("href") ?? string.Empty;
+                string title = (await element.InnerTextAsync())?.Trim() ?? string.Empty;
+
+                // Filter lege of te korte teksten
+                if (string.IsNullOrEmpty(title) || title.Length <= 3)
+                    continue;
+
+                // Maak relatieve URLs absoluut
+                if (href.StartsWith("/"))
+                    href = "https://werkenbij.cogas.nl" + href;
+
+                // Voorkom duplicaten op basis van URL
+                if (!vacancies.Any(v => v.Link == href))
                 {
-                    foreach (var linkNode in links)
-                    {
-                        string href = linkNode.GetAttributeValue("href", string.Empty);
-                        if (href.Contains("/vacature/"))
-                        {
-                            string title = HtmlEntity.DeEntitize(linkNode.InnerText.Trim());
-
-                            if (!string.IsNullOrEmpty(title) && title.Length > 3)
-                            {
-                                if (href.StartsWith("/"))
-                                {
-                                    href = "https://werkenbij.cogas.nl" + href;
-                                }
-
-                                var vacancy = new JobVacancy { Title = title, Link = href };
-                                if (!vacancies.Any(v => v.Link == vacancy.Link))
-                                {
-                                    vacancies.Add(vacancy);
-                                }
-                            }
-                        }
-                    }
+                    vacancies.Add(new JobVacancy { Title = title, Link = href });
+                    Console.WriteLine($"  Gevonden: {title}");
                 }
             }
         }
+        catch (TimeoutException)
+        {
+            Console.WriteLine("Time-out bij laden van de vacaturepagina.");
+        }
         catch (Exception ex)
         {
-            Console.WriteLine($"Fout bij ophalen pagina: {ex.Message}");
+            Console.WriteLine($"Fout bij ophalen via Playwright: {ex.Message}");
         }
 
         return vacancies;
     }
 
-    private static void SendNotification(List<JobVacancy> newVacancies)
+    private static void SendEmailNotification(List<JobVacancy> newVacancies)
     {
-        string? senderEmail = Environment.GetEnvironmentVariable("MAIL_USERNAME");
+        string? senderEmail   = Environment.GetEnvironmentVariable("MAIL_USERNAME");
         string? senderPassword = Environment.GetEnvironmentVariable("MAIL_PASSWORD");
-        string? receiverEmail = Environment.GetEnvironmentVariable("MAIL_TO");
+        string? receiverEmail  = Environment.GetEnvironmentVariable("MAIL_TO");
 
-        if (string.IsNullOrEmpty(senderEmail) || string.IsNullOrEmpty(senderPassword) || string.IsNullOrEmpty(receiverEmail))
+        if (string.IsNullOrEmpty(senderEmail) ||
+            string.IsNullOrEmpty(senderPassword) ||
+            string.IsNullOrEmpty(receiverEmail))
         {
             Console.WriteLine("E-mailconfiguratie ontbreekt in omgevingsvariabelen.");
             return;
@@ -127,26 +141,45 @@ class Program
 
         try
         {
-            var mailMessage = new MailMessage();
-            mailMessage.From = new MailAddress(senderEmail);
+            // Bouw een HTML-e-mail zodat links klikbaar zijn
+            string vacancyListHtml = string.Join("\n", newVacancies.Select(v =>
+                $"  <li><a href=\"{v.Link}\">{System.Net.WebUtility.HtmlEncode(v.Title)}</a></li>"
+            ));
+
+            string htmlBody = $"""
+                <html>
+                <body style="font-family: Arial, sans-serif; color: #222;">
+                  <h2>🚨 Nieuwe Cogas vacature(s) gevonden!</h2>
+                  <p>Er {(newVacancies.Count == 1 ? "is" : "zijn")} <strong>{newVacancies.Count}</strong>
+                     nieuwe vacature(s) beschikbaar bij Cogas:</p>
+                  <ul>
+                {vacancyListHtml}
+                  </ul>
+                  <p style="color: #666; font-size: 0.9em;">
+                    Bekijk alle vacatures op
+                    <a href="https://werkenbij.cogas.nl/vacatures">werkenbij.cogas.nl</a>.
+                  </p>
+                </body>
+                </html>
+                """;
+
+            var mailMessage = new MailMessage
+            {
+                From       = new MailAddress(senderEmail, "Cogas Vacature Melder"),
+                Subject    = $"🚨 {newVacancies.Count} nieuwe Cogas vacature(s) gevonden!",
+                Body       = htmlBody,
+                IsBodyHtml = true
+            };
             mailMessage.To.Add(receiverEmail);
-            mailMessage.Subject = $"🚨 Nieuwe Cogas vacature(s) gevonden! ({newVacancies.Count})";
 
-            string body = "Er zijn nieuwe vacatures gevonden bij Cogas:\n\n";
-            foreach (var v in newVacancies)
+            using var smtpClient = new SmtpClient("smtp.gmail.com")
             {
-                body += $"- {v.Title}\n  {v.Link}\n\n";
-            }
-            mailMessage.Body = body;
+                Port        = 587,
+                Credentials = new NetworkCredential(senderEmail, senderPassword),
+                EnableSsl   = true
+            };
 
-            using (var smtpClient = new SmtpClient("smtp.gmail.com", 587))
-            {
-                smtpClient.Port = 587;
-                smtpClient.Credentials = new NetworkCredential(senderEmail, senderPassword);
-                smtpClient.EnableSsl = true;
-                smtpClient.Send(mailMessage);
-            }
-
+            smtpClient.Send(mailMessage);
             Console.WriteLine("E-mail succesvol verzonden!");
         }
         catch (Exception ex)

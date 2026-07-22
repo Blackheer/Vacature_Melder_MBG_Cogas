@@ -1,6 +1,4 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-
-name: Check Cogas Vacancies (.NET)
+name: Check Cogas Vacancies (Playwright)
 
 on:
   schedule:
@@ -12,12 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up .NET Core
+      - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0'
@@ -25,17 +23,26 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
-      - name: Run C# script
+      - name: Build project
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Install Playwright browsers
+        run: |
+          # Installeer alleen Chromium + systeem-afhankelijkheden
+          dotnet tool install --global Microsoft.Playwright.CLI || true
+          pwsh bin/Release/net8.0/playwright.ps1 install chromium --with-deps
+
+      - name: Run vacancy checker
         env:
           MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: dotnet run --configuration Release
+        run: dotnet run --configuration Release --no-build
 
-      - name: Commit and push if vacancies changed
+      - name: Commit en push als vacatures zijn gewijzigd
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           git add vacancies.json
-          git diff --staged --quiet || git commit -m "Update vacatures lijst via .NET"
+          git diff --staged --quiet || git commit -m "Update vacatures lijst via Playwright"
           git push
