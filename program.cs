@@ -9,13 +9,14 @@ using Microsoft.Playwright;
 
 class Program
 {
-    private static readonly string Url = "https://werkenbij.cogas.nl/vacatures?functiegroep=";
+    private static readonly string Url = "https://werkenbij.cogas.nl/vacatures";
     private static readonly string JsonFile = "vacancies.json";
 
     public static async Task Main(string[] args)
     {
         Console.WriteLine("Start vacature-controle via Playwright...");
 
+        // Haal huidige vacatures op van de website
         var currentVacancies = await GetCurrentVacanciesAsync();
 
         if (currentVacancies.Count == 0)
@@ -47,9 +48,9 @@ class Program
             File.WriteAllText(JsonFile, "[]");
         }
 
-        // Vergelijk op basis van URL
-        var oldLinks = new HashSet<string>(oldVacancies.Select(v => v.Link));
-        var newVacancies = currentVacancies.Where(v => !oldLinks.Contains(v.Link)).ToList();
+        // Vergelijk op basis van titel (links kunnen leeg zijn bij JS-rendered cards)
+        var oldTitles = new HashSet<string>(oldVacancies.Select(v => v.Title));
+        var newVacancies = currentVacancies.Where(v => !oldTitles.Contains(v.Title)).ToList();
 
         if (newVacancies.Count > 0)
         {
@@ -61,6 +62,7 @@ class Program
             Console.WriteLine("Geen nieuwe vacatures gevonden.");
         }
 
+        // Sla de huidige stand op (overschrijft het oude bestand)
         string updatedJson = JsonConvert.SerializeObject(currentVacancies, Formatting.Indented);
         File.WriteAllText(JsonFile, updatedJson);
         Console.WriteLine("vacancies.json bijgewerkt.");
@@ -87,31 +89,36 @@ class Program
                 WaitUntil = WaitUntilState.NetworkIdle
             });
 
-            // Selecteer alle vacature-links
-            var elements = await page.QuerySelectorAllAsync("a[href*='/vacature/']");
+            // De vacaturekaarten bevatten een <h4> met de titel.
+            // De klikbare link zit in een omliggende <a> parent.
+            var headings = await page.QuerySelectorAllAsync("h4");
 
-            foreach (var element in elements)
+            foreach (var heading in headings)
             {
-                string href = await element.GetAttributeAsync("href") ?? string.Empty;
-                string title = (await element.InnerTextAsync())?.Trim() ?? string.Empty;
+                string title = (await heading.InnerTextAsync())?.Trim() ?? string.Empty;
 
-                // Filter lege of te korte teksten
+                // Filter lege, te korte of navigatieteksten
                 if (string.IsNullOrEmpty(title) || title.Length <= 3)
                     continue;
+
+                // Zoek de dichtstbijzijnde <a> ancestor van de <h4>
+                string href = await heading.EvaluateAsync<string>(
+                    "el => { const a = el.closest('a'); return a ? a.getAttribute('href') : ''; }"
+                ) ?? string.Empty;
 
                 // Maak relatieve URLs absoluut
                 if (href.StartsWith("/"))
                     href = "https://werkenbij.cogas.nl" + href;
 
-                // Voorkom duplicaten op basis van URL
-                if (!vacancies.Any(v => v.Link == href))
+                // Sla op als unieke vacature (op titel, want link kan leeg zijn)
+                if (!vacancies.Any(v => v.Title == title))
                 {
                     vacancies.Add(new JobVacancy { Title = title, Link = href });
-                    Console.WriteLine($"  Gevonden: {title}");
+                    Console.WriteLine($"  Gevonden: {title} → {(string.IsNullOrEmpty(href) ? "(geen link)" : href)}");
                 }
             }
         }
-        catch (PlaywrightException ex) when (ex.Message.Contains("Timeout", StringComparison.OrdinalIgnoreCase))
+        catch (TimeoutException)
         {
             Console.WriteLine("Time-out bij laden van de vacaturepagina.");
         }
