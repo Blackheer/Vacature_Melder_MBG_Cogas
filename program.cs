@@ -16,7 +16,6 @@ class Program
     {
         Console.WriteLine("Start vacature-controle via Playwright...");
 
-        // Haal huidige vacatures op van de website
         var currentVacancies = await GetCurrentVacanciesAsync();
 
         if (currentVacancies.Count == 0)
@@ -62,7 +61,6 @@ class Program
             Console.WriteLine("Geen nieuwe vacatures gevonden.");
         }
 
-        // Sla de huidige stand op (overschrijft het oude bestand)
         string updatedJson = JsonConvert.SerializeObject(currentVacancies, Formatting.Indented);
         File.WriteAllText(JsonFile, updatedJson);
         Console.WriteLine("vacancies.json bijgewerkt.");
@@ -113,7 +111,7 @@ class Program
                 }
             }
         }
-        catch (TimeoutException)
+        catch (PlaywrightException ex) when (ex.Message.Contains("Timeout", StringComparison.OrdinalIgnoreCase))
         {
             Console.WriteLine("Time-out bij laden van de vacaturepagina.");
         }
