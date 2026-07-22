@@ -89,9 +89,16 @@ class Program
                 WaitUntil = WaitUntilState.NetworkIdle
             });
 
+            // TIJDELIJK: sla screenshot en HTML op voor debug
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "debug_screenshot.png", FullPage = true });
+            File.WriteAllText("debug_html.html", await page.ContentAsync());
+            Console.WriteLine("DEBUG: Screenshot opgeslagen als debug_screenshot.png");
+            Console.WriteLine("DEBUG: HTML opgeslagen als debug_html.html");
+
             // De vacaturekaarten bevatten een <h4> met de titel.
             // De klikbare link zit in een omliggende <a> parent.
             var headings = await page.QuerySelectorAllAsync("h4");
+            Console.WriteLine($"DEBUG: {headings.Count} h4-elementen gevonden op de pagina.");
 
             foreach (var heading in headings)
             {
@@ -114,7 +121,7 @@ class Program
                 if (!vacancies.Any(v => v.Title == title))
                 {
                     vacancies.Add(new JobVacancy { Title = title, Link = href });
-                    Console.WriteLine($"  Gevonden: {title} → {(string.IsNullOrEmpty(href) ? "(geen link)" : href)}");
+                    Console.WriteLine($"  Gevonden: {title} -> {(string.IsNullOrEmpty(href) ? "(geen link)" : href)}");
                 }
             }
         }
@@ -132,7 +139,7 @@ class Program
 
     private static void SendEmailNotification(List<JobVacancy> newVacancies)
     {
-        string? senderEmail   = Environment.GetEnvironmentVariable("MAIL_USERNAME");
+        string? senderEmail    = Environment.GetEnvironmentVariable("MAIL_USERNAME");
         string? senderPassword = Environment.GetEnvironmentVariable("MAIL_PASSWORD");
         string? receiverEmail  = Environment.GetEnvironmentVariable("MAIL_TO");
 
@@ -154,7 +161,7 @@ class Program
             string htmlBody = $"""
                 <html>
                 <body style="font-family: Arial, sans-serif; color: #222;">
-                  <h2>🚨 Nieuwe Cogas vacature(s) gevonden!</h2>
+                  <h2>Nieuwe Cogas vacature(s) gevonden!</h2>
                   <p>Er {(newVacancies.Count == 1 ? "is" : "zijn")} <strong>{newVacancies.Count}</strong>
                      nieuwe vacature(s) beschikbaar bij Cogas:</p>
                   <ul>
@@ -171,7 +178,7 @@ class Program
             var mailMessage = new MailMessage
             {
                 From       = new MailAddress(senderEmail, "Cogas Vacature Melder"),
-                Subject    = $"🚨 {newVacancies.Count} nieuwe Cogas vacature(s) gevonden!",
+                Subject    = $"Nieuwe Cogas vacature(s) gevonden! ({newVacancies.Count})",
                 Body       = htmlBody,
                 IsBodyHtml = true
             };
