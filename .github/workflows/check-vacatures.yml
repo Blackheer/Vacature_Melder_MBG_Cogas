@@ -27,10 +27,8 @@ jobs:
         run: dotnet build --configuration Release --no-restore
 
       - name: Install Playwright browsers
-        run: |
-          # Installeer alleen Chromium + systeem-afhankelijkheden
-          dotnet tool install --global Microsoft.Playwright.CLI || true
-          pwsh bin/Release/net8.0/playwright.ps1 install chromium --with-deps
+        # Geen --with-deps: libs staan al op de runner en de apt-mirror was onbereikbaar
+        run: pwsh bin/Release/net8.0/playwright.ps1 install chromium
 
       - name: Run vacancy checker
         env:
